@@ -5,7 +5,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { app, session, BrowserWindow } = require('electron');
+const { app, session, BrowserWindow, safeStorage } = require('electron');
 const f1tv = require('./f1tv-bridge');
 const { parseJwtPayload } = require('./util');
 
@@ -65,11 +65,32 @@ function persistSettingsKey(key, value) {
   }
 }
 
+/** Writes a credential file encrypted with the OS keystore (DPAPI/Keychain/libsecret) when available. */
+function writeSecretFile(p, text) {
+  if (safeStorage.isEncryptionAvailable()) {
+    fs.writeFileSync(p, safeStorage.encryptString(text));
+  } else {
+    fs.writeFileSync(p, text, 'utf-8');
+  }
+}
+
+/** Reads a credential file; plaintext JSON from older builds is accepted and re-written encrypted. */
+function readSecretFile(p) {
+  const buf = fs.readFileSync(p);
+  const first = buf[0];
+  if (first === 0x7b || first === 0x5b) { // '{' or '[': legacy plaintext JSON
+    const text = buf.toString('utf-8');
+    if (safeStorage.isEncryptionAvailable()) writeSecretFile(p, text);
+    return text;
+  }
+  return safeStorage.decryptString(buf);
+}
+
 function loadPersistedSession() {
   try {
     const p = getSessionFilePath();
     if (!fs.existsSync(p)) return null;
-    const raw = fs.readFileSync(p, 'utf-8');
+    const raw = readSecretFile(p);
     const obj = JSON.parse(raw);
     if (obj && typeof obj.accessToken === 'string' && obj.accessToken.length > 50) {
       return obj.accessToken;
@@ -82,7 +103,7 @@ function persistSession(token) {
   try {
     const p = getSessionFilePath();
     if (token) {
-      fs.writeFileSync(p, JSON.stringify({ accessToken: token }), 'utf-8');
+      writeSecretFile(p, JSON.stringify({ accessToken: token }));
     } else {
       if (fs.existsSync(p)) fs.unlinkSync(p);
     }
@@ -94,7 +115,7 @@ function persistCookies(cookieList) {
   if (!Array.isArray(cookieList) || !cookieList.length) return;
   try {
     const p = getCookiesFilePath();
-    fs.writeFileSync(p, JSON.stringify(cookieList), 'utf-8');
+    writeSecretFile(p, JSON.stringify(cookieList));
     console.log('[session] saved', cookieList.length, 'cookies to disk');
   } catch (e) {
     console.warn('[session] persist cookies:', e?.message);
@@ -106,7 +127,7 @@ async function restorePersistedCookies() {
   try {
     const p = getCookiesFilePath();
     if (!fs.existsSync(p)) return;
-    const raw = fs.readFileSync(p, 'utf-8');
+    const raw = readSecretFile(p);
     const list = JSON.parse(raw);
     if (!Array.isArray(list) || !list.length) return;
     const defaultCookies = session.defaultSession.cookies;

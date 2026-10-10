@@ -6,6 +6,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const { pathToFileURL } = require('url');
 const { BrowserWindow, screen } = require('electron');
 
 /** The single main dashboard window, not the multiview/livetiming/player popouts. Update notices target this one. */
@@ -30,6 +31,32 @@ function getMainAppUrl() {
   return 'file://' + path.join(__dirname, '..', 'dist', 'index.html').replace(/\\/g, '/');
 }
 
+/** True when `url` is the app itself (any #route), i.e. a navigation that never leaves the bundle. */
+function isAppUrl(url) {
+  try {
+    const target = new URL(url);
+    const startUrl = process.env.ELECTRON_START_URL;
+    if (startUrl) return target.origin === new URL(startUrl).origin;
+    const appIndex = pathToFileURL(path.join(__dirname, '..', 'dist', 'index.html'));
+    return target.protocol === 'file:' && target.pathname.toLowerCase() === appIndex.pathname.toLowerCase();
+  } catch (_) {
+    return false;
+  }
+}
+
+/** App windows run with webSecurity off and the privileged preload: never let them leave the bundle. */
+function lockNavigation(win) {
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    console.warn('[security] blocked window.open:', url);
+    return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (evt, url) => {
+    if (isAppUrl(url)) return;
+    evt.preventDefault();
+    console.warn('[security] blocked navigation:', url);
+  });
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1200,
@@ -45,6 +72,8 @@ function createWindow() {
       webSecurity: false, // avoid CORS blocks on manifest/segment/license F1 TV CDN
     },
   });
+
+  lockNavigation(win);
 
   const startUrl = process.env.ELECTRON_START_URL;
   // Pipe renderer errors/warnings to main logs (black-screen diagnostics).
@@ -136,6 +165,7 @@ function createMultiviewWindow() {
     },
   });
 
+  lockNavigation(win);
   multiviewWindows.set(id, win);
   win.on('closed', () => {
     multiviewWindows.delete(id);
@@ -245,6 +275,7 @@ function createLiveTimingWindow(opts = {}) {
       sandbox: false,
     },
   });
+  lockNavigation(win);
   liveTimingWindows.add(win);
   win.on('closed', () => liveTimingWindows.delete(win));
   win.loadURL(url).catch((e) => console.warn('[livetiming] window load failed:', e?.message));
@@ -333,6 +364,7 @@ async function openCustomPlayerWindow(contentId, title, channelId) {
       webSecurity: false,
     },
   });
+  lockNavigation(win);
   win.loadURL(url).catch((e) => {
     console.warn('[player] loadURL failed:', e?.message);
   });

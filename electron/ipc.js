@@ -235,6 +235,10 @@ function setupIpc() {
     const method = req?.method;
     const url = req?.url;
     if (!method || !url) throw new Error('Invalid request (method/url).');
+    // This handler attaches the F1 TV bearer: never let it reach a host outside formula1.com.
+    if (typeof url !== 'string' || !url.startsWith('https://') || !hasFormula1Host(url)) {
+      throw new Error('Request host not allowed.');
+    }
 
     const timeout = Number(req?.timeoutMs ?? 30000);
     const headers = Object.assign({}, req?.headers || {});
