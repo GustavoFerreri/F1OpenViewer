@@ -43,7 +43,7 @@
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
-    "electron": "github:castlabs/electron-releases#v40.7.0+wvcus",
+    "electron": "github:castlabs/electron-releases#v43.7.7+wvcus",
     "electron-builder": "^26.8.1",
     "postcss": "^8.5.6",
     "rcedit": "^5.0.2",
@@ -78,8 +78,8 @@
     "afterSign": "scripts/evs-after-sign.js"
   },
   "allowScripts": {
-    "github:castlabs/electron-releases#3412c2dfbbaad4136f5b6767e902e3859222d1e8": true,
+    "github:castlabs/electron-releases#3160da083d6ee7c322af92d67cb4d20da0be0742": true,
     "electron-winstaller@5.4.0": true,
-    "esbuild@0.27.3": true
+    "esbuild@0.28.2": true
   }
 }
