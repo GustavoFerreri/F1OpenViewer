@@ -44,8 +44,17 @@ function isAppUrl(url) {
   }
 }
 
-/** App windows run with webSecurity off and the privileged preload: never let them leave the bundle. */
+/** webContents ids of the app's own windows (not the F1 TV site/login windows sharing the session). */
+const appWebContentsIds = new Set();
+function isAppWebContentsId(id) {
+  return appWebContentsIds.has(id);
+}
+
+/** App windows load the privileged preload: never let them leave the bundle. */
 function lockNavigation(win) {
+  const wcId = win.webContents.id;
+  appWebContentsIds.add(wcId);
+  win.on('closed', () => appWebContentsIds.delete(wcId));
   win.webContents.setWindowOpenHandler(({ url }) => {
     console.warn('[security] blocked window.open:', url);
     return { action: 'deny' };
@@ -67,9 +76,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
       plugins: true, // required for CDM/DRM in some configurations
-      webSecurity: false, // avoid CORS blocks on manifest/segment/license F1 TV CDN
     },
   });
 
@@ -159,9 +167,8 @@ function createMultiviewWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
       plugins: true,
-      webSecurity: false, // avoid CORS blocks on manifest/segment/license F1 TV CDN
     },
   });
 
@@ -272,7 +279,7 @@ function createLiveTimingWindow(opts = {}) {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
   lockNavigation(win);
@@ -358,10 +365,9 @@ async function openCustomPlayerWindow(contentId, title, channelId) {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false,
+      sandbox: true,
       partition: 'default',
       plugins: true,
-      webSecurity: false,
     },
   });
   lockNavigation(win);
@@ -390,6 +396,7 @@ async function openCustomPlayerWindow(contentId, title, channelId) {
 }
 
 module.exports = {
+  isAppWebContentsId,
   getMainWindow,
   getAppIcon,
   getMainAppUrl,

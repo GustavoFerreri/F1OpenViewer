@@ -14,7 +14,9 @@ const { setupIpc } = require('./ipc');
 
 widevine.configureWidevineFromEnv();
 
-// On Windows avoid "Sandbox cannot access executable" which can block CDM/DRM
+// Process-wide: the castLabs Widevine CDM fails to load on Windows under the OS sandbox
+// ("CreateCdmFunc not available", verified on Electron 43.7.7). App windows still use
+// webPreferences.sandbox, which keeps Node out of the renderer and the preload.
 if (process.platform === 'win32') {
   app.commandLine.appendSwitch('no-sandbox');
 }

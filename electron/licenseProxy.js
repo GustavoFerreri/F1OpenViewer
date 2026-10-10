@@ -9,9 +9,13 @@
  */
 
 const http = require('http');
+const crypto = require('crypto');
+const path = require('path');
+const { fileURLToPath } = require('url');
 const { session } = require('electron');
 const f1tv = require('./f1tv-bridge');
 const sessionState = require('./session');
+const windows = require('./windows');
 const { redact, parseJwtPayload, isFormula1Hostname, hasFormula1Host } = require('./util');
 
 const LICENSE_PROXY_PORT_MIN = 18765;
@@ -37,9 +41,26 @@ function buildStreamKey(contentId, channelId) {
   return `${c}:${ch}`;
 }
 
+/** Per-launch secret: only URLs handed out by this process can drive the proxy, not other local software. */
+const LICENSE_PROXY_SECRET = crypto.randomBytes(24).toString('hex');
+
 function streamProxyUrl(streamKey) {
-  return `${licenseProxyBaseUrl}?stream=${encodeURIComponent(streamKey)}`;
+  return `${licenseProxyBaseUrl}?stream=${encodeURIComponent(streamKey)}&k=${LICENSE_PROXY_SECRET}`;
 }
+
+function hasValidProxySecret(parsedUrl) {
+  const given = Buffer.from(parsedUrl.searchParams.get('k') || '');
+  const expected = Buffer.from(LICENSE_PROXY_SECRET);
+  return given.length === expected.length && crypto.timingSafeEqual(given, expected);
+}
+
+/** The app renderer (file:// or the Vite dev server) calls the proxy cross-origin. */
+const LICENSE_PROXY_CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': '*, Authorization',
+  'Access-Control-Max-Age': '600',
+};
 
 function clearStreams() {
   licenseProxyStreams.clear();
@@ -395,11 +416,23 @@ function startLicenseProxy() {
         res.end();
         return;
       }
-      if (req.method !== 'POST' || parsedUrl.pathname !== '/la') {
+      if (parsedUrl.pathname !== '/la' || (req.method !== 'POST' && req.method !== 'OPTIONS')) {
         res.writeHead(404);
         res.end();
         return;
       }
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, LICENSE_PROXY_CORS_HEADERS);
+        res.end();
+        return;
+      }
+      if (!hasValidProxySecret(parsedUrl)) {
+        console.warn('[license-proxy] rejected request without a valid proxy secret');
+        res.writeHead(403, LICENSE_PROXY_CORS_HEADERS);
+        res.end();
+        return;
+      }
+      for (const [k, v] of Object.entries(LICENSE_PROXY_CORS_HEADERS)) res.setHeader(k, v);
       const requestedStreamKey = parsedUrl.searchParams.get('stream') || '';
       const streamKey = requestedStreamKey || LEGACY_PLAYER_STREAM_KEY;
       const entry = licenseProxyStreams.get(streamKey)
@@ -551,20 +584,43 @@ function startLicenseProxy() {
   tryListen(LICENSE_PROXY_PORT_MIN);
 }
 
-function setupCorsRelaxForDev() {
-  // Renderer uses IPC, not direct calls. We still enable a dev-only policy for cross-origin (manifest/segment).
-  if (process.env.ELECTRON_RELAX_CORS === 'true') {
-    session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-      details.requestHeaders['Origin'] = details.requestHeaders['Origin'] || 'https://localhost';
-      callback({ requestHeaders: details.requestHeaders });
-    });
-    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-      const headers = details.responseHeaders || {};
-      headers['access-control-allow-origin'] = ['*'];
-      headers['access-control-allow-headers'] = ['*'];
-      callback({ responseHeaders: headers });
-    });
-  }
+/**
+ * App windows run with webSecurity on, so Shaka's manifest/segment/license fetches from the
+ * file:// (or dev-server) origin need CORS. The stream CDN host comes from the API at runtime,
+ * so CORS is opened for every http(s) response to an app window only; the F1 TV site and login
+ * windows (same session) keep the server's own headers. CSP still bounds what the app can reach.
+ */
+function setupAppWindowCors() {
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    if (!windows.isAppWebContentsId(details.webContentsId) || !/^https?:/.test(details.url || '')) {
+      callback({ cancel: false });
+      return;
+    }
+    const responseHeaders = {};
+    for (const [k, v] of Object.entries(details.responseHeaders || {})) {
+      if (!k.toLowerCase().startsWith('access-control-')) responseHeaders[k] = v;
+    }
+    responseHeaders['Access-Control-Allow-Origin'] = ['*'];
+    responseHeaders['Access-Control-Allow-Methods'] = ['GET, HEAD, POST, OPTIONS'];
+    responseHeaders['Access-Control-Allow-Headers'] = ['*, Authorization'];
+    responseHeaders['Access-Control-Expose-Headers'] = ['*'];
+    const result = { responseHeaders };
+    if (details.method === 'OPTIONS') result.statusLine = 'HTTP/1.1 204 No Content';
+    callback(result);
+  });
+}
+
+/** file:// pages can read any local file even with webSecurity on: only the bundle in dist/ is served. */
+function setupFileAccessGuard() {
+  const distDir = path.resolve(__dirname, '..', 'dist').toLowerCase() + path.sep;
+  session.defaultSession.webRequest.onBeforeRequest({ urls: ['file://*/*'] }, (details, callback) => {
+    let allowed = false;
+    try {
+      allowed = fileURLToPath(details.url).toLowerCase().startsWith(distDir);
+    } catch (_) {}
+    if (!allowed) console.warn('[security] blocked file access:', details.url);
+    callback({ cancel: !allowed });
+  });
 }
 
 /** Log LA request response status for debug (403/401 = rejected). */
@@ -663,9 +719,10 @@ function setupLicenseRequestHeaders() {
   });
 }
 
-/** Installs all three webRequest hooks (dev CORS relax, LA response logging, LA/CDN header injection). */
+/** Installs all three webRequest hooks (app-window CORS, LA response logging, LA/CDN header injection). */
 function installWebRequestHooks() {
-  setupCorsRelaxForDev();
+  setupAppWindowCors();
+  setupFileAccessGuard();
   setupLicenseResponseLog();
   setupLicenseRequestHeaders();
 }
